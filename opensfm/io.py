@@ -15,8 +15,8 @@ import numpy as np
 import pyproj
 from six import iteritems
 
-from opensfm import geo
 from opensfm import features
+from opensfm import geo
 from opensfm import types
 from opensfm import context
 
@@ -132,6 +132,12 @@ def point_from_json(key, obj):
     point.coordinates = obj["coordinates"]
     if "reprojection_error" in obj:
         point.reprojection_error = obj["reprojection_error"]
+    if "descriptor" in obj:
+        point.descriptor = obj["descriptor"]
+    if "scale" in obj:
+        point.scale = obj["scale"]
+    if "orientation" in obj:
+        point.orientation = obj["orientation"]
     return point
 
 
@@ -154,7 +160,7 @@ def reconstruction_from_json(obj):
     # Extract points
     if 'points' in obj:
         for key, value in iteritems(obj['points']):
-            point = point_from_json(key, value)
+            point = point_from_json(int(key), value)
             reconstruction.add_point(point)
 
     # Extract pano_shots
@@ -169,12 +175,6 @@ def reconstruction_from_json(obj):
         reconstruction.main_shot = obj['main_shot']
     if 'unit_shot' in obj:
         reconstruction.unit_shot = obj['unit_shot']
-
-    # Extract reference topocentric frame
-    if 'reference_lla' in obj:
-        lla = obj['reference_lla']
-        reconstruction.reference = geo.TopocentricConverter(
-            lla['latitude'], lla['longitude'], lla['altitude'])
 
     return reconstruction
 
@@ -298,11 +298,20 @@ def point_to_json(point):
     """
     Write a point to a json object
     """
-    return {
-        'color': list(point.color),
-        'coordinates': list(point.coordinates),
-        'reprojection_error': point.reprojection_error
-    }
+    # Create dictionary with required properties
+    pt_dict = {'color': list(point.color),
+               'coordinates': list(point.coordinates)
+               }
+    # Add optional descriptor properties
+    if hasattr(point, 'reprojection_error'):
+        pt_dict['reprojection_error'] = point.reprojection_error
+    if hasattr(point, 'descriptor'):
+        pt_dict['descriptor'] = list(point.descriptor)
+    if hasattr(point, 'scale'):
+        pt_dict['scale'] = point.scale
+    if hasattr(point, 'orientation'):
+        pt_dict['orientation'] = point.orientation
+    return pt_dict
 
 
 def reconstruction_to_json(reconstruction):
@@ -339,15 +348,6 @@ def reconstruction_to_json(reconstruction):
     if hasattr(reconstruction, 'unit_shot'):
         obj['unit_shot'] = reconstruction.unit_shot
 
-    # Extract reference topocentric frame
-    if reconstruction.reference:
-        ref = reconstruction.reference
-        obj['reference_lla'] = {
-            'latitude': ref.lat,
-            'longitude': ref.lon,
-            'altitude': ref.alt,
-        }
-
     return obj
 
 
@@ -368,17 +368,21 @@ def cameras_to_json(cameras):
     return obj
 
 
-def _read_gcp_list_line(line, projection, reference, exif):
-    words = line.split(None, 5)
+def _read_gcp_list_line(line, projection, reference_lla, exif):
+    words = line.split()
     easting, northing, alt, pixel_x, pixel_y = map(float, words[:5])
-    shot_id = words[5].strip()
+    shot_id = words[5]
 
     # Convert 3D coordinates
     if projection is not None:
         lon, lat = projection(easting, northing, inverse=True)
     else:
         lon, lat = easting, northing
-    x, y, z = reference.to_topocentric(lat, lon, alt)
+    x, y, z = geo.topocentric_from_lla(
+        lat, lon, alt,
+        reference_lla['latitude'],
+        reference_lla['longitude'],
+        reference_lla['altitude'])
 
     # Convert 2D coordinates
     d = exif[shot_id]
@@ -428,7 +432,7 @@ def _valid_gcp_line(line):
     return stripped and stripped[0] != '#'
 
 
-def read_ground_control_points_list(fileobj, reference, exif):
+def read_ground_control_points_list(fileobj, reference_lla, exif):
     """Read a ground control point list file.
 
     It requires the points to be in the WGS84 lat, lon, alt format.
@@ -436,7 +440,7 @@ def read_ground_control_points_list(fileobj, reference, exif):
     all_lines = fileobj.readlines()
     lines = iter(filter(_valid_gcp_line, all_lines))
     projection = _parse_projection(next(lines))
-    points = [_read_gcp_list_line(line, projection, reference, exif)
+    points = [_read_gcp_list_line(line, projection, reference_lla, exif)
               for line in lines]
     return points
 
@@ -574,16 +578,10 @@ def json_loads(text):
     return json.loads(text)
 
 
-def imread(filename, grayscale=False, unchanged=False):
-    """Load image as an array ignoring EXIF orientation."""
+def imread(filename):
+    """Load image as an RGB array ignoring EXIF orientation."""
     if context.OPENCV3:
-        if grayscale:
-            flags = cv2.IMREAD_GRAYSCALE
-        elif unchanged:
-            flags = cv2.IMREAD_UNCHANGED
-        else:
-            flags = cv2.IMREAD_COLOR
-
+        flags = cv2.IMREAD_COLOR
         try:
             flags |= cv2.IMREAD_IGNORE_ORIENTATION
         except AttributeError:
@@ -592,28 +590,20 @@ def imread(filename, grayscale=False, unchanged=False):
                 "rotating them according to EXIF. Please upgrade OpenCV to "
                 "version 3.2 or newer.".format(cv2.__version__))
     else:
-        if grayscale:
-            flags = cv2.CV_LOAD_IMAGE_GRAYSCALE
-        elif unchanged:
-            flags = cv2.CV_LOAD_IMAGE_UNCHANGED
-        else:
-            flags = cv2.CV_LOAD_IMAGE_COLOR
+        flags = cv2.CV_LOAD_IMAGE_COLOR
 
-    image = cv2.imread(filename, flags)
+    bgr = cv2.imread(filename, flags)
 
-    if image is None:
+    if bgr is None:
         raise IOError("Unable to load image {}".format(filename))
 
-    if len(image.shape) == 3:
-        image[:,:,:3] = image[:, :, [2,1,0]]  # Turn BGR to RGB (or BGRA to RGBA)
-    return image
+    return bgr[:, :, ::-1]  # Turn BGR to RGB
 
 
 def imwrite(filename, image):
-    """Write an image to a file"""
-    if len(image.shape) == 3 :
-        image[:,:,:3] = image[:, :, [2,1,0]]  # Turn RGB to BGR (or RGBA to BGRA)
-    cv2.imwrite(filename, image)
+    """Write an RGB image to a file"""
+    bgr = image[:, :, ::-1]
+    cv2.imwrite(filename, bgr)
 
 
 # Bundler
@@ -833,7 +823,7 @@ def reconstruction_to_ply(reconstruction, no_cameras=False, no_points=False):
             R = shot.pose.get_rotation_matrix()
             for axis in range(3):
                 c = 255 * np.eye(3)[axis]
-                for depth in np.linspace(0, 2, 10):
+                for depth in np.linspace(0, 1, 10):
                     p = o + depth * R[axis]
                     s = "{} {} {} {} {} {}".format(
                         p[0], p[1], p[2], int(c[0]), int(c[1]), int(c[2]))

@@ -19,9 +19,12 @@ class Command:
     def add_arguments(self, parser):
         parser.add_argument('dataset', help='dataset to process')
 
-    def run(self, args):
+    def run(self, args, images=None):
         data = dataset.DataSet(args.dataset)
-        images = data.images()
+        if images is None:
+            images = data.images()  # use all images if none are input
+        elif not isinstance(images, list):
+            raise IOError("input images must be a list")
 
         arguments = [(image, data) for image in images]
 
@@ -57,7 +60,7 @@ def detect(args):
     logger.info('Extracting {} features for image {}'.format(
         data.feature_type().upper(), image))
 
-    if not data.feature_index_exists(image):
+    if not data.feature_exists(image):
         start = timer()
         mask = data.load_combined_mask(image)
         if mask is not None:

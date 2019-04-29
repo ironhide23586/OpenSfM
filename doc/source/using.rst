@@ -86,11 +86,11 @@ The following data is extracted for each image:
 
 - ``width`` and ``height``: image size in pixels
 
-- ``gps`` ``latitude``, ``longitude``, ``altitude`` and ``dop``: The GPS coordinates of the camera at capture time and the corresponding Dilution Of Precision).  This is used to geolocate the reconstruction.
+- ``gps`` ``latitude``, ``longitude``, ``altitude`` and ``dop``: The GPS coordinates of the camera at capture time and the corresponding Degree Of Precission).  This is used to geolocate the reconstruction.
 
 - ``capture_time``: The capture time. Used to choose candidate matching images when the option ``matching_time_neighbors`` is set.
 
-- ``camera orientation``: The EXIF orientation tag (see this `exif orientation documentation`_).  Used to orient the reconstruction straight up.
+- ``camera orientation``: The EXIF orientation tag (see this `exif orientation documentation`_).  Used to orient the reconstruction straigh up.
 
 - ``projection_type``: The camera projection type.  It is extracted from the GPano_ metadata and used to determine which projection to use for each camera.  Supported types are `perspective`, `equirectangular` and `fisheye`.
 
@@ -113,27 +113,6 @@ For each camera the following data is stored:
 - ``k1_prior`` and ``k2_prior``:  The radial distortion parameters prior.
 
 
-Providing additional metadata
-'''''''''''''''''''''''''''''
-
-When some metadata is missing or erroneous in the EXIF, it can be provided on the ``exif_overrides.json`` file.  This file must contain a dictionary mapping image names to the metadata fields that will override the values in the EXIF.
-
-For example, to set the GPS location of an image that might not have it available in its EXIF tags, we will write the following in the ``exif_overrides.json`` file::
-
-    {
-        "image_name.jpg": {
-            "gps": {
-                "latitude": 52.51891, 
-                "longitude": 13.40029,
-                "altitude": 27.0, 
-                "dop": 5.0
-            }
-        }
-    }
-
-These values are used during the ``extract_metadata``, so we will need to rerun that command after writing the file.
-
-
 Providing your own camera parameters
 ''''''''''''''''''''''''''''''''''''
 
@@ -150,7 +129,7 @@ Here is a `spherical 360 images dataset`_ example using ``camera_models_override
 
 detect_features
 ```````````````
-This command detects feature points in the images and stores them in the `feature` folder.
+This command detect feature points in the images and stores them in the `feature` folder.
 
 
 match_features
@@ -190,9 +169,7 @@ This commands computes a dense point cloud of the scene by computing and merging
 Configuration
 -------------
 
-SfM algorithms have options and depend on various parameters.  OpenSfM comes setup with default values for each option but you might want to tune some options for a particular dataset.  Options used to reconstruct a dataset can be set by editing the file ``DATASET_PATH/config.yaml``.  Any option present in this file will override the default.
-
-Checkout `the default configuration <_modules/opensfm/config.html>`_ to see the list of options.
+TODO explain config.yaml and the available parameters
 
 
 .. include:: gcp.rst

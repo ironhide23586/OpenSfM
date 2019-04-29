@@ -133,11 +133,11 @@ def align_reconstruction_orientation_prior_similarity(reconstruction, config):
     X = Rplane.dot(X.T).T
 
     # Estimate 2d similarity to align to GPS
-    single_shot = len(X) < 2
-    same_shots = (X.std(axis=0).max() < 1e-8 or     # All points are the same.
-                  Xp.std(axis=0).max() < 0.01)      # All GPS points are the same.
-    if single_shot or same_shots:
-        s = 1.0
+    if (len(X) < 2 or
+            X.std(axis=0).max() < 1e-8 or     # All points are the same.
+            Xp.std(axis=0).max() < 0.01):      # All GPS points are the same.
+        # Set the arbitrary scale proportional to the number of cameras.
+        s = len(X) / max(1e-8, X.std(axis=0).max())
         A = Rplane
         b = Xp.mean(axis=0) - X.mean(axis=0)
     else:
@@ -196,9 +196,8 @@ def triangulate_single_gcp(reconstruction, observations):
             bs.append(r.dot(b))
 
     if len(os) >= 2:
-        thresholds = len(os) * [reproj_threshold]
-        angle = np.radians(min_ray_angle_degrees)
-        e, X = csfm.triangulate_bearings_midpoint(os, bs, thresholds, angle)
+        e, X = csfm.triangulate_bearings_midpoint(
+            os, bs, reproj_threshold, np.radians(min_ray_angle_degrees))
         return X
 
 

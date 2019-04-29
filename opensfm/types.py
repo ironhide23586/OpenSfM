@@ -642,6 +642,47 @@ class Shot(object):
         """
         return self.pose.get_rotation_matrix().T.dot([0, 0, 1])
 
+    def get_projection_mat(self):
+        """
+        Retrieve projection matrix for shot
+        :return: 3x4 projection matrix
+        """
+        Rt = np.hstack((self.pose.get_rotation_matrix(), np.reshape(self.pose.translation, (3, 1))))  # [R | t] matrix
+        return np.dot(self.camera.get_K(), Rt)  # compute projection matrix
+
+    def get_fundamental_mat(self, shot):
+        """
+        Computes the fundamental matrix from this image to another
+        :param shot: a Shot object
+        :return: 3x3 fundamental matrix with the input shot
+        """
+        if not isinstance(shot, Shot):
+            raise IOError("Input shot must be a Shot object")
+
+        p0, p1 = self.get_projection_mat(), shot.get_projection_mat()  # projection matrices
+
+        # Extract epipole (position of first camera in second image)
+        c0 = self.pose.get_origin()  # camera center in world coordinates
+        e1 = np.dot(p1, np.hstack((c0, 1)))  # Find epipole. Similar to shot.project(point=c0), w/out lens distortion
+        e1 /= e1[2]  # normalize  TODO find if this is necessary - LH 9/4/18
+
+        return np.dot(cross_matrix(e1), np.dot(p1, np.linalg.pinv(p0)))
+
+
+def cross_matrix(vv):
+    """
+    Computes the 3x3 "cross matrix" [v]_x for an input 3-vector v
+
+    :param vv: 3-vector
+    :return cross_mat: 3x3 "cross matrix" [v]_x
+    """
+    if not isinstance(vv, np.ndarray) or vv.size != 3:
+        raise IOError("Input vv must be a 3-element ndarray")
+
+    return np.array([[0, -vv[2], vv[1]],
+                     [vv[2], 0, -vv[0]],
+                     [-vv[1], vv[0], 0]])
+
 
 class Point(object):
     """Defines a 3D point.
@@ -683,9 +724,8 @@ class Reconstruction(object):
 
     Attributes:
       cameras (Dict(Camera)): List of cameras.
-      shots (Dict(Shot)): List of reconstructed shots.
-      points (Dict(Point)): List of reconstructed points.
-      reference (TopocentricConverter): Topocentric reference converter.
+      shots   (Dict(Shot)): List of reconstructed shots.
+      points  (Dict(Point)): List of reconstructed points.
     """
 
     def __init__(self):
@@ -693,7 +733,6 @@ class Reconstruction(object):
         self.cameras = {}
         self.shots = {}
         self.points = {}
-        self.reference = None
 
     def add_camera(self, camera):
         """Add a camera in the list
@@ -736,3 +775,80 @@ class Reconstruction(object):
         :return: If exists returns the point, otherwise None.
         """
         return self.points.get(id)
+
+    def get_all_points(self):
+        """Retrieve all reconstructed points, sorted by scale"""
+        # Sort points by scale
+        pts = self.points.values()
+        order = np.argsort([pt.scale for pt in pts])
+        return np.array(pts)[order]
+
+    def display_point_cloud(self, img_name, pt_sz=10):
+        """
+        Create rendering of point cloud from the perspective of a given image
+
+        :param img_name: name of the viewpoint image
+        :param pt_sz: radius of points in rendered image
+        :return cld_img: MxNx3 pixel array of rendered point cloud image
+        """
+        from features import denormalized_image_coordinates  # TODO move this import to top of file? - LH 8/16/18
+
+        # Check input
+        if img_name not in self.shots:
+            raise IOError("Could not find image {} in reconstruction".format(img_name))
+
+        # Extract data
+        shot = self.shots[img_name]  # extract shot
+        pts = np.array([pt.coordinates for pt in self.points.values()])  # extract points
+        clr = np.array([pt.color for pt in self.points.values()]).astype('int')  # extract point color
+        img_sz = np.array((shot.camera.width, shot.camera.height))
+
+        # Project 3d points to 2d image coordinates
+        # TODO account for points behind camera - LH 8/16/18
+        xy = shot.project_many(pts)  # project points to image xy plane
+        jj, ii = denormalized_image_coordinates(xy, shot.camera.width, shot.camera.height).T
+
+        # Generate image of point cloud
+        cld_img = np.zeros((img_sz[1], img_sz[0], 3), dtype='uint8')  # initialize output
+        for i, j, c in zip(ii, jj, clr):
+            if (i >= 0) and (j >= 0) and (i < img_sz[1]) and (j < img_sz[0]):
+                cld_img = cv2.circle(cld_img, (int(j), int(i)), pt_sz, c, -1)
+
+        return cld_img
+
+    def merge_partial(self, partial):
+        """Merges partial reconstructions into a single Reconstruction"""
+        if not isinstance(partial, Reconstruction):
+            raise IOError("Input partial must be a Reconstruction object")
+        self.cameras.update(partial.cameras)
+        self.shots.update(partial.shots)
+        self.points.update(partial.points)
+
+    def recenter(self, ctr=np.zeros(3)):
+        """
+        Modify the point and camera positions so that the cameras are centered at an input point
+
+        :param ctr: The desired center of the point cloud
+        :return: None; modifies self
+        """
+        # """
+        # Compute the camera centers
+        avg_cam_ctr = np.mean([shot.pose.get_origin() for shot in self.shots.values()], axis=0)
+        dx = ctr - avg_cam_ctr
+
+        for shot in self.shots.values():  # Re-center each camera
+            shot.pose.set_origin(shot.pose.get_origin() + dx)
+
+        for pt in self.points.values():  # Re-center each point
+            pt.coordinates += dx
+
+    def get_bound_box(self):
+        """
+        Extracts the bounding box for the points of the reconstruction
+
+        :return min_pt: 3-element array of minimum (x,y,z) values over all points
+        :return max_pt: 3-element array of maximum (x,y,z) values over all points
+        """
+
+        pts = np.array([pt.coordinates for pt in self.points.values()])
+        return pts.min(axis=0), pts.max(axis=0)

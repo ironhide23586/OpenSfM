@@ -10,14 +10,17 @@ import cv2
 import numpy as np
 import pyopengv
 import six
+import nudged
 from timeit import default_timer as timer
 from six import iteritems
 
 from opensfm import csfm
+from opensfm import geo
 from opensfm import log
-from opensfm import tracking
+from opensfm import matching
 from opensfm import multiview
 from opensfm import types
+from opensfm import features
 from opensfm.align import align_reconstruction, apply_similarity
 from opensfm.context import parallel_map, current_memory_usage
 
@@ -29,12 +32,12 @@ def _add_camera_to_bundle(ba, camera, constant):
     """Add camera to a bundle adjustment problem."""
     if camera.projection_type == 'perspective':
         ba.add_perspective_camera(
-            camera.id, camera.focal, camera.k1, camera.k2,
+            str(camera.id), camera.focal, camera.k1, camera.k2,
             camera.focal_prior, camera.k1_prior, camera.k2_prior,
             constant)
     elif camera.projection_type == 'brown':
         c = csfm.BABrownPerspectiveCamera()
-        c.id = camera.id
+        c.id = str(camera.id)
         c.focal_x = camera.focal_x
         c.focal_y = camera.focal_y
         c.c_x = camera.c_x
@@ -57,22 +60,22 @@ def _add_camera_to_bundle(ba, camera, constant):
         ba.add_brown_perspective_camera(c)
     elif camera.projection_type == 'fisheye':
         ba.add_fisheye_camera(
-            camera.id, camera.focal, camera.k1, camera.k2,
+            str(camera.id), camera.focal, camera.k1, camera.k2,
             camera.focal_prior, camera.k1_prior, camera.k2_prior,
             constant)
     elif camera.projection_type in ['equirectangular', 'spherical']:
-        ba.add_equirectangular_camera(camera.id)
+        ba.add_equirectangular_camera(str(camera.id))
 
 
 def _get_camera_from_bundle(ba, camera):
     """Read camera parameters from a bundle adjustment problem."""
     if camera.projection_type == 'perspective':
-        c = ba.get_perspective_camera(camera.id)
+        c = ba.get_perspective_camera(str(camera.id))
         camera.focal = c.focal
         camera.k1 = c.k1
         camera.k2 = c.k2
     elif camera.projection_type == 'brown':
-        c = ba.get_brown_perspective_camera(camera.id)
+        c = ba.get_brown_perspective_camera(str(camera.id))
         camera.focal_x = c.focal_x
         camera.focal_y = c.focal_y
         camera.c_x = c.c_x
@@ -83,7 +86,7 @@ def _get_camera_from_bundle(ba, camera):
         camera.p2 = c.p2
         camera.k3 = c.k3
     elif camera.projection_type == 'fisheye':
-        c = ba.get_fisheye_camera(camera.id)
+        c = ba.get_fisheye_camera(str(camera.id))
         camera.focal = c.focal
         camera.k1 = c.k1
         camera.k2 = c.k2
@@ -103,7 +106,7 @@ def bundle(graph, reconstruction, gcp, config):
         r = shot.pose.rotation
         t = shot.pose.translation
         ba.add_shot(
-            shot.id, shot.camera.id,
+            str(shot.id), str(shot.camera.id),
             r[0], r[1], r[2],
             t[0], t[1], t[2],
             False
@@ -111,26 +114,26 @@ def bundle(graph, reconstruction, gcp, config):
 
     for point in reconstruction.points.values():
         x = point.coordinates
-        ba.add_point(point.id, x[0], x[1], x[2], False)
+        ba.add_point(str(point.id), x[0], x[1], x[2], False)
 
     for shot_id in reconstruction.shots:
         if shot_id in graph:
             for track in graph[shot_id]:
                 if track in reconstruction.points:
-                    ba.add_observation(shot_id, track,
+                    ba.add_observation(str(shot_id), str(track),
                                        *graph[shot_id][track]['feature'])
 
     if config['bundle_use_gps']:
         for shot in reconstruction.shots.values():
             g = shot.metadata.gps_position
-            ba.add_position_prior(shot.id, g[0], g[1], g[2],
+            ba.add_position_prior(str(shot.id), g[0], g[1], g[2],
                                   shot.metadata.gps_dop)
 
     if config['bundle_use_gcp'] and gcp:
         for observation in gcp:
             if observation.shot_id in reconstruction.shots:
                 ba.add_ground_control_point_observation(
-                    observation.shot_id,
+                    str(observation.shot_id),
                     observation.coordinates[0],
                     observation.coordinates[1],
                     observation.coordinates[2],
@@ -160,12 +163,12 @@ def bundle(graph, reconstruction, gcp, config):
         _get_camera_from_bundle(ba, camera)
 
     for shot in reconstruction.shots.values():
-        s = ba.get_shot(shot.id)
+        s = ba.get_shot(str(shot.id))
         shot.pose.rotation = [s.rx, s.ry, s.rz]
         shot.pose.translation = [s.tx, s.ty, s.tz]
 
     for point in reconstruction.points.values():
-        p = ba.get_point(point.id)
+        p = ba.get_point(str(point.id))
         point.coordinates = [p.x, p.y, p.z]
         point.reprojection_error = p.reprojection_error
 
@@ -190,7 +193,7 @@ def bundle_single_view(graph, reconstruction, shot_id, config):
     r = shot.pose.rotation
     t = shot.pose.translation
     ba.add_shot(
-        shot.id, camera.id,
+        str(shot.id), str(camera.id),
         r[0], r[1], r[2],
         t[0], t[1], t[2],
         False
@@ -200,13 +203,13 @@ def bundle_single_view(graph, reconstruction, shot_id, config):
         if track_id in reconstruction.points:
             track = reconstruction.points[track_id]
             x = track.coordinates
-            ba.add_point(track_id, x[0], x[1], x[2], True)
-            ba.add_observation(shot_id, track_id,
+            ba.add_point(str(track_id), x[0], x[1], x[2], True)
+            ba.add_observation(str(shot_id), str(track_id),
                                *graph[shot_id][track_id]['feature'])
 
     if config['bundle_use_gps']:
         g = shot.metadata.gps_position
-        ba.add_position_prior(shot.id, g[0], g[1], g[2],
+        ba.add_position_prior(str(shot.id), g[0], g[1], g[2],
                               shot.metadata.gps_dop)
 
     ba.set_loss_function(config['loss_function'],
@@ -228,7 +231,7 @@ def bundle_single_view(graph, reconstruction, shot_id, config):
 
     logger.debug(ba.brief_report())
 
-    s = ba.get_shot(shot_id)
+    s = ba.get_shot(str(shot_id))
     shot.pose.rotation = [s.rx, s.ry, s.rz]
     shot.pose.translation = [s.tx, s.ty, s.tz]
 
@@ -265,7 +268,7 @@ def bundle_local(graph, reconstruction, gcp, central_shot_id, config):
         r = shot.pose.rotation
         t = shot.pose.translation
         ba.add_shot(
-            shot.id, shot.camera.id,
+            str(shot.id), str(shot.camera.id),
             r[0], r[1], r[2],
             t[0], t[1], t[2],
             shot.id in boundary
@@ -274,20 +277,20 @@ def bundle_local(graph, reconstruction, gcp, central_shot_id, config):
     for point_id in point_ids:
         point = reconstruction.points[point_id]
         x = point.coordinates
-        ba.add_point(point.id, x[0], x[1], x[2], False)
+        ba.add_point(str(point.id), x[0], x[1], x[2], False)
 
     for shot_id in interior | boundary:
         if shot_id in graph:
             for track in graph[shot_id]:
                 if track in point_ids:
-                    ba.add_observation(shot_id, track,
+                    ba.add_observation(str(shot_id), str(track),
                                        *graph[shot_id][track]['feature'])
 
     if config['bundle_use_gps']:
         for shot_id in interior:
             shot = reconstruction.shots[shot_id]
             g = shot.metadata.gps_position
-            ba.add_position_prior(shot.id, g[0], g[1], g[2],
+            ba.add_position_prior(str(shot.id), g[0], g[1], g[2],
                                   shot.metadata.gps_dop)
 
     if config['bundle_use_gcp'] and gcp:
@@ -322,13 +325,13 @@ def bundle_local(graph, reconstruction, gcp, central_shot_id, config):
 
     for shot_id in interior:
         shot = reconstruction.shots[shot_id]
-        s = ba.get_shot(shot.id)
+        s = ba.get_shot(str(shot.id))
         shot.pose.rotation = [s.rx, s.ry, s.rz]
         shot.pose.translation = [s.tx, s.ty, s.tz]
 
     for point in point_ids:
         point = reconstruction.points[point]
-        p = ba.get_point(point.id)
+        p = ba.get_point(str(point.id))
         point.coordinates = [p.x, p.y, p.z]
         point.reprojection_error = p.reprojection_error
 
@@ -444,7 +447,7 @@ def get_image_metadata(data, image):
     """Get image metadata as a ShotMetadata object."""
     metadata = types.ShotMetadata()
     exif = data.load_exif(image)
-    reference = data.load_reference()
+    reflla = data.load_reference_lla()
     if ('gps' in exif and
             'latitude' in exif['gps'] and
             'longitude' in exif['gps']):
@@ -454,7 +457,9 @@ def get_image_metadata(data, image):
             alt = exif['gps'].get('altitude', 2.0)
         else:
             alt = 2.0  # Arbitrary value used to align the reconstruction
-        x, y, z = reference.to_topocentric(lat, lon, alt)
+        x, y, z = geo.topocentric_from_lla(
+            lat, lon, alt,
+            reflla['latitude'], reflla['longitude'], reflla['altitude'])
         metadata.gps_position = [x, y, z]
         metadata.gps_dop = exif['gps'].get('dop', 15.0)
     else:
@@ -555,17 +560,15 @@ def two_view_reconstruction(p1, p2, camera1, camera2, threshold):
     # focal length 1.  Also, arctan(threshold) \approx threshold since
     # threshold is small
     T = multiview.relative_pose_ransac(
-        b1, b2, b"STEWENIUS", 1 - np.cos(threshold), 1000, 0.999)
+        b1, b2, "STEWENIUS", 1 - np.cos(threshold), 1000, 0.999)
     R = T[:, :3]
     t = T[:, 3]
     inliers = _two_view_reconstruction_inliers(b1, b2, R, t, threshold)
 
-    if inliers.sum() > 5:
-        T = multiview.relative_pose_optimize_nonlinear(b1[inliers],
-                                                       b2[inliers], t, R)
-        R = T[:, :3]
-        t = T[:, 3]
-        inliers = _two_view_reconstruction_inliers(b1, b2, R, t, threshold)
+    T = multiview.relative_pose_optimize_nonlinear(b1[inliers], b2[inliers], t, R)
+    R = T[:, :3]
+    t = T[:, 3]
+    inliers = _two_view_reconstruction_inliers(b1, b2, R, t, threshold)
 
     return cv2.Rodrigues(R.T)[0].ravel(), -R.T.dot(t), inliers
 
@@ -656,7 +659,6 @@ def bootstrap_reconstruction(data, graph, im1, im2, p1, p2):
         return None, report
 
     reconstruction = types.Reconstruction()
-    reconstruction.reference = data.load_reference()
     reconstruction.cameras = cameras
 
     shot1 = types.Shot()
@@ -732,7 +734,7 @@ def resect(graph, reconstruction, shot_id,
         return False, {'num_common_points': len(bs)}
 
     T = multiview.absolute_pose_ransac(
-        bs, Xs, b"KNEIP", 1 - np.cos(threshold), 1000, 0.999)
+        bs, Xs, "KNEIP", 1 - np.cos(threshold), 1000, 0.999)
 
     R = T[:, :3]
     t = T[:, 3]
@@ -781,8 +783,6 @@ def compute_common_tracks(reconstruction1, reconstruction2,
     common_images = set(reconstruction1.shots.keys()).intersection(
         reconstruction2.shots.keys())
     for image in common_images:
-        if image not in graph1 or image not in graph2:
-            continue
         for t1, t2 in corresponding_tracks(graph1[image], graph2[image]):
             if t1 in reconstruction1.points and t2 in reconstruction2.points:
                 common_tracks.add((t1, t2))
@@ -817,9 +817,9 @@ class TrackTriangulator:
         self.rotation_inverses = {}
         self.Rts = {}
 
-    def triangulate(self, track, reproj_threshold, min_ray_angle_degrees):
+    def triangulate(self, track, reproj_threshold, min_ray_angle_degrees, max_dist=np.inf):
         """Triangulate track and add point to reconstruction."""
-        os, bs = [], []
+        os, bs, cam_loc = [], [], []
         for shot_id in self.graph[track]:
             if shot_id in self.reconstruction.shots:
                 shot = self.reconstruction.shots[shot_id]
@@ -828,16 +828,18 @@ class TrackTriangulator:
                 b = shot.camera.pixel_bearing(np.array(x))
                 r = self._shot_rotation_inverse(shot)
                 bs.append(r.dot(b))
+                cam_loc.append(shot.pose.get_origin())  # extract position of camera
 
         if len(os) >= 2:
-            thresholds = len(os) * [reproj_threshold]
             e, X = csfm.triangulate_bearings_midpoint(
-                os, bs, thresholds, np.radians(min_ray_angle_degrees))
+                os, bs, reproj_threshold, np.radians(min_ray_angle_degrees))
             if X is not None:
-                point = types.Point()
-                point.id = track
-                point.coordinates = X.tolist()
-                self.reconstruction.add_point(point)
+                pt_dist = np.linalg.norm(cam_loc - X, axis=1).max()  # max distance from source camera to point
+                if pt_dist < max_dist:
+                    point = types.Point()
+                    point.id = track
+                    point.coordinates = X.tolist()
+                    self.reconstruction.add_point(point)
 
     def triangulate_dlt(self, track, reproj_threshold, min_ray_angle_degrees):
         """Triangulate track using DLT and add point to reconstruction."""
@@ -888,12 +890,13 @@ def triangulate_shot_features(graph, reconstruction, shot_id, config):
     """Reconstruct as many tracks seen in shot_id as possible."""
     reproj_threshold = config['triangulation_threshold']
     min_ray_angle = config['triangulation_min_ray_angle']
+    max_dist = config['triangulation_max_dist']
 
     triangulator = TrackTriangulator(graph, reconstruction)
 
     for track in graph[shot_id]:
         if track not in reconstruction.points:
-            triangulator.triangulate(track, reproj_threshold, min_ray_angle)
+            triangulator.triangulate(track, reproj_threshold, min_ray_angle, max_dist)
 
 
 def retriangulate(graph, reconstruction, config):
@@ -904,10 +907,7 @@ def retriangulate(graph, reconstruction, config):
     threshold = config['triangulation_threshold']
     min_ray_angle = config['triangulation_min_ray_angle']
     triangulator = TrackTriangulator(graph, reconstruction)
-    tracks = set()
-    for image in reconstruction.shots.keys():
-        if image in graph:
-            tracks.update(graph[image].keys())
+    tracks, images = matching.tracks_and_images(graph)
     for track in tracks:
         triangulator.triangulate(track, threshold, min_ray_angle)
     report['num_points_after'] = len(reconstruction.points)
@@ -933,7 +933,9 @@ def remove_outliers(graph, reconstruction, config):
 def shot_lla_and_compass(shot, reference):
     """Lat, lon, alt and compass of the reconstructed shot position."""
     topo = shot.pose.get_origin()
-    lat, lon, alt = reference.to_lla(*topo)
+    lat, lon, alt = geo.lla_from_topocentric(
+        topo[0], topo[1], topo[2],
+        reference['latitude'], reference['longitude'], reference['altitude'])
 
     dz = shot.viewing_direction()
     angle = np.rad2deg(np.arctan2(dz[0], dz[1]))
@@ -1013,9 +1015,12 @@ def merge_reconstructions(reconstructions, config):
 
 
 def paint_reconstruction(data, graph, reconstruction):
-    """Set the color of the points from the color of the tracks."""
-    for k, point in iteritems(reconstruction.points):
+    """Set the color and descriptor of the points from the color and descriptor of the tracks."""
+    for k, point in iteritems(reconstruction.points):  # TODO consider writing out the associated images - LH 8/15/18
         point.color = six.next(six.itervalues(graph[k]))['feature_color']
+        point.descriptor = six.next(six.itervalues(graph[k]))['descriptor']
+        point.scale = six.next(six.itervalues(graph[k]))['scale']
+        point.orientation = six.next(six.itervalues(graph[k]))['orientation']
 
 
 class ShouldBundle:
@@ -1143,23 +1148,22 @@ def grow_reconstruction(data, graph, reconstruction, images, gcp):
     return reconstruction, report
 
 
-def incremental_reconstruction(data, graph):
+def incremental_reconstruction(data):
     """Run the entire incremental reconstruction pipeline."""
     logger.info("Starting incremental reconstruction")
     report = {}
     chrono = Chronometer()
-
-    tracks, images = tracking.tracks_and_images(graph)
-    chrono.lap('load_tracks_graph')
-
     if not data.reference_lla_exists():
-        data.invent_reference_lla(images)
+        data.invent_reference_lla()
 
+    graph = data.load_tracks_graph()
+    tracks, images = matching.tracks_and_images(graph)
+    chrono.lap('load_tracks_graph')
     remaining_images = set(images)
     gcp = None
     if data.ground_control_points_exist():
         gcp = data.load_ground_control_points()
-    common_tracks = tracking.all_common_tracks(graph, tracks)
+    common_tracks = matching.all_common_tracks(graph, tracks)
     reconstructions = []
     pairs = compute_image_pairs(common_tracks, data)
     chrono.lap('compute_image_pairs')
@@ -1181,6 +1185,13 @@ def incremental_reconstruction(data, graph):
                 reconstructions.append(reconstruction)
                 reconstructions = sorted(reconstructions,
                                          key=lambda x: -len(x.shots))
+                data.save_reconstruction(reconstructions)
+
+                if data.config['matcher_type'] == 'FLANN':  # Build FLANN for point cloud features and write to file
+                    for nn, recon in enumerate(reconstructions):
+                        feat = np.array([pt.descriptor for pt in recon.get_all_points()], dtype='float32')
+                        flann_idx = features.build_flann_index(feat, data.config)
+                        data.save_reconstruction_flann(flann_idx, nn)
 
     for k, r in enumerate(reconstructions):
         logger.info("Reconstruction {}: {} images, {} points".format(
@@ -1190,8 +1201,83 @@ def incremental_reconstruction(data, graph):
     chrono.lap('compute_reconstructions')
     report['wall_times'] = dict(chrono.lap_times())
     report['not_reconstructed_images'] = list(remaining_images)
-    return report, reconstructions
+    return report
 
+
+def register_to_gps(reconstruction, data, trans_dim=2):
+    # TODO deprecate this method. There is already a method to do this in align.py. align_reconstruction_orientation_prior_similarity() - LH 9/25/18
+    """
+    Registers reconstruction to GPS data via similarity transform
+
+    :param reconstruction: Reconstruction object
+    :param data: DataSet object
+    :param trans_dim: number of dimensions to perform transform (2 restricts transform to 2d ground plane; 3 estimates
+    3d similarity transform)
+    :return: None; modifies reconstruction
+    """
+    # Extract shots with GPS in their EXIF
+    cam_pos_est, cam_pos_gps = [], []
+    for shot in reconstruction.shots.values():
+        exif = get_image_metadata(data, shot.id)  # load exif data for image
+        if exif.gps_dop < 9999:  # EXIF contains GPS data
+            cam_pos_est.append(shot.pose.get_origin())  # estimated position of camera
+            cam_pos_gps.append(exif.gps_position)
+
+    # Estimate least-squares similarity transform mapping cam_pos_est to cam_pos_gps
+    # TODO consider 3d similarity transform - LH 9/21/18
+    if trans_dim == 2:
+        trans = nudged.estimate(cam_pos_est, cam_pos_gps)
+
+        # Extract 3d rotation matrix
+        R_trans = np.eye(3)
+        R_trans[:2, :2] = np.array(trans.get_matrix())[:2, :2] / trans.get_scale()  # rotation matrix
+
+        def sim_transform_pt(pt):
+            """Applies similarity transform to input point"""
+            x, y = trans.transform(pt[:2])
+            z = pt[2] * trans.get_scale()
+            return [x, y, z]
+    else:
+        npts = len(cam_pos_est)  # number of points
+        # Compute the distances between each pair
+        dist_est, dist_gps = [], []
+        for nn in xrange(npts):
+            for mm in xrange(nn+1, npts):
+                dist_est.append(np.linalg.norm(cam_pos_est[mm] - cam_pos_est[nn]))
+                dist_gps.append(np.linalg.norm(np.array(cam_pos_gps[mm]) - np.array(cam_pos_gps[nn])))
+        # Estimate a least-squares transform such that dist_gps = scale * dist_est
+        dist_est, dist_gps = np.array(dist_est), np.array(dist_gps)
+        scale = np.sum(dist_est * dist_gps) / np.sum(dist_est ** 2)
+
+        # Compute the centroids of the point sets (A = est, B = gps)
+        ctr_est, ctr_gps = np.mean(cam_pos_est, axis=0), np.mean(cam_pos_gps, axis=0)
+        cam_pos_gps0 = cam_pos_gps - ctr_gps
+        cam_pos_est0 = (cam_pos_est - ctr_est) * scale
+
+        # Now estimate least-squares rigid transform of scaled values, following http://nghiaho.com/?page_id=671
+        H = np.dot(cam_pos_est0.T, cam_pos_gps0)
+        u, _, vh = np.linalg.svd(H)
+        R_trans = np.dot(u, vh)
+        if np.linalg.det(R_trans) < 0.0:
+            raise IOError("Special case not yet supported")
+        tt = -scale * np.dot(R_trans, ctr_est) + ctr_gps
+
+        def sim_transform_pt(pt):
+            """Applies similarity transform to input point"""
+            xyz = scale * np.dot(R_trans, pt) + tt
+            return xyz.tolist()
+
+
+    # Apply transform to shots
+    for shot in reconstruction.shots.values():
+        cam_pos_est = shot.pose.get_origin()
+        rot_mat = np.dot(shot.pose.get_rotation_matrix(), R_trans.T)
+        shot.pose.set_rotation_matrix(rot_mat)
+        shot.pose.set_origin(sim_transform_pt(cam_pos_est))
+
+    # Apply transform to points
+    for pt in reconstruction.points.values():
+        pt.coordinates = sim_transform_pt(pt.coordinates)
 
 class Chronometer:
     def __init__(self):

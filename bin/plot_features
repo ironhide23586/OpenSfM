@@ -26,7 +26,7 @@ def plot_features(image, points):
     for p, s, a in zip(pixels, sizes, angles):
         patches.append(Wedge(p, s, a + 1, a - 1))
 
-    collection = PatchCollection(patches, alpha=0.4)
+    collection = PatchCollection(patches, alpha=0.8)
     ax.add_collection(collection)
 
 
@@ -54,7 +54,7 @@ if __name__ == "__main__":
         if args.save_figs:
             p = os.path.join(args.dataset, 'plot_features')
             io.mkdir_p(p)
-            plt.savefig(os.path.join(p, image + '.jpg'))
+            plt.savefig(os.path.join(p, image + '.png'))
             plt.close()
         else:
             plt.show()

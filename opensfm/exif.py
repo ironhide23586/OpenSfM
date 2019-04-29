@@ -1,5 +1,3 @@
-from __future__ import division
-
 import datetime
 import exifread
 import logging
@@ -12,8 +10,6 @@ from opensfm import types
 
 
 logger = logging.getLogger(__name__)
-
-inch_in_mm = 1609334.0 / 1760.0 / 3.0 / 12.0
 
 
 def eval_frac(value):
@@ -134,14 +130,10 @@ class EXIF:
 
     def extract_image_size(self):
         # Image Width and Image Height
-        if ('EXIF ExifImageWidth' in self.tags and # PixelXDimension
-            'EXIF ExifImageLength' in self.tags):  # PixelYDimension
+        if ('EXIF ExifImageWidth' in self.tags and
+                'EXIF ExifImageLength' in self.tags):
             width, height = (int(self.tags['EXIF ExifImageWidth'].values[0]),
                              int(self.tags['EXIF ExifImageLength'].values[0]))
-        elif ('Image ImageWidth' in self.tags and
-              'Image ImageLength' in self.tags):
-            width, height = (int(self.tags['Image ImageWidth'].values[0]),
-                             int(self.tags['Image ImageLength'].values[0]))
         else:
             width, height = -1, -1
         return width, height
@@ -184,40 +176,9 @@ class EXIF:
         focal_35, focal_ratio = compute_focal(
             get_tag_as_float(self.tags, 'EXIF FocalLengthIn35mmFilm'),
             get_tag_as_float(self.tags, 'EXIF FocalLength'),
-            self.extract_sensor_width(),
+            get_tag_as_float(self.tags, 'EXIF CCD width'),
             sensor_string(make, model))
         return focal_35, focal_ratio
-
-    def extract_sensor_width(self):
-        """Compute sensor with from width and resolution."""
-        if ('EXIF FocalPlaneResolutionUnit' not in self.tags or
-                'EXIF FocalPlaneXResolution' not in self.tags):
-            return None
-        resolution_unit = self.tags['EXIF FocalPlaneResolutionUnit'].values[0]
-        mm_per_unit = self.get_mm_per_unit(resolution_unit)
-        if not mm_per_unit:
-            return None
-        pixels_per_unit = get_tag_as_float(self.tags, 'EXIF FocalPlaneXResolution')
-        units_per_pixel = 1 / pixels_per_unit
-        width_in_pixels = self.extract_image_size()[0]
-        return width_in_pixels * units_per_pixel * mm_per_unit
-
-    def get_mm_per_unit(resolution_unit):
-        """Length of a resolution unit in millimeters.
-
-        Uses the values from the EXIF specs in
-        https://www.sno.phy.queensu.ca/~phil/exiftool/TagNames/EXIF.html
-
-        Args:
-            resolution_unit: the resolution unit value given in the EXIF
-        """
-        if resolution_unit == 2:    # inch
-            return inch_in_mm
-        elif resolution_unit == 3:  # cm
-            return 10
-        else:
-            logger.warning('Unknown EXIF resolution unit value: {}'.format(resolution_unit))
-            return None
 
     def extract_orientation(self):
         orientation = 1
@@ -292,6 +253,26 @@ class EXIF:
                 return timestamp
         return 0.0
 
+    def extract_gps_time(self):
+        time_str, date_str = 'GPS GPSTimeStamp', 'GPS GPSDate'
+        if (time_str not in self.tags) or (date_str not in self.tags):
+            return 0.0  # could not find a GPS timestamp
+
+        # Extract GPS time
+        hr, mn, sec = self.tags.get(time_str).values
+        hr, mn, sec = eval_frac(hr), eval_frac(mn), eval_frac(sec)
+        gps_date = datetime.datetime.strptime(self.tags.get(date_str).values, '%Y:%m:%d')
+
+        # Extract timestamp as number of microseconds past GPS epoch (Jan 6, 1980)
+        gps_time = gps_date + datetime.timedelta(hours=hr, minutes=mn, seconds=sec) - datetime.datetime(1980, 1, 6)
+        timestamp = int(gps_time.total_seconds() * 1e6)
+        return timestamp
+
+    def extract_gps_img_direction(self):
+        """Extract heading of image (clockwise degrees from north)"""
+        ky = 'GPS GPSImgDirection'
+        return eval_frac(self.tags.get(ky).values[0]) if ky in self.tags else None
+
     def extract_exif(self):
         width, height = self.extract_image_size()
         projection_type = self.extract_projection_type()
@@ -309,6 +290,8 @@ class EXIF:
             'focal_ratio': focal_ratio,
             'orientation': orientation,
             'capture_time': capture_time,
+            'gps_time': self.extract_gps_time(),
+            'img_direction': self.extract_gps_img_direction(),
             'gps': geo
         }
         d['camera'] = camera_id(d)
@@ -360,7 +343,7 @@ def hard_coded_calibration(exif):
             return {'focal': 0.55, 'k1': -0.30, 'k2': 0.08}
         elif 'hdr-as300' in model:
             return {"focal":  0.3958, "k1": -0.1496, "k2": 0.0201}
-
+            
 
 def focal_ratio_calibration(exif):
     if exif['focal_ratio']:
@@ -389,7 +372,7 @@ def camera_from_exif_metadata(metadata, data):
     '''
     Create a camera object from exif metadata
     '''
-    pt = metadata.get('projection_type', 'perspective').lower()
+    pt = metadata.get('projection_type', 'perspective')
     if pt == 'perspective':
         calib = (hard_coded_calibration(metadata)
                  or focal_ratio_calibration(metadata)
@@ -430,6 +413,22 @@ def camera_from_exif_metadata(metadata, data):
         camera.id = metadata['camera']
         camera.width = metadata['width']
         camera.height = metadata['height']
+        return camera
+    elif pt == 'fisheye':
+        calib = (hard_coded_calibration(metadata)
+                 or focal_ratio_calibration(metadata)
+                 or default_calibration(data))
+        camera = types.FisheyeCamera()
+        camera.id = metadata['camera']
+        camera.width = metadata['width']
+        camera.height = metadata['height']
+        camera.projection_type = pt
+        camera.focal = calib['focal']
+        camera.k1 = calib['k1']
+        camera.k2 = calib['k2']
+        camera.focal_prior = calib['focal']
+        camera.k1_prior = calib['k1']
+        camera.k2_prior = calib['k2']
         return camera
     else:
         raise ValueError("Unknown projection type: {}".format(pt))

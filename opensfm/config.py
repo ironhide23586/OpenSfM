@@ -48,6 +48,7 @@ flann_iterations: 10          # See OpenCV doc
 flann_checks: 200             # Smaller -> Faster (but might lose good matches)
 
 # Params for preemptive matching
+special_matching_method: None         # Defines a special method for matching. Video = match sequential frames without GPS, and match GPS images to all frames 
 matching_gps_distance: 150            # Maximum gps distance between two images for matching
 matching_gps_neighbors: 0             # Number of images to match selected by GPS distance. Set to 0 to use no limit (or disable if matching_gps_distance is also 0)
 matching_time_neighbors: 0            # Number of images to match selected by time taken. Set to 0 to disable
@@ -63,6 +64,7 @@ five_point_algo_threshold: 0.004        # Outlier threshold for essential matrix
 five_point_algo_min_inliers: 20         # Minimum number of inliers for considering a two view reconstruction valid
 triangulation_threshold: 0.006          # Outlier threshold for accepting a triangulated point in radians
 triangulation_min_ray_angle: 1.0        # Minimum angle between views to accept a triangulated point
+triangulation_max_dist: .inf            # Maximum allowable distance from a camera to a point. Far points are often unreliably placed
 resection_threshold: 0.004              # Outlier threshold for resection in radians
 resection_min_inliers: 10               # Minimum number of resection inliers to accept it
 
@@ -112,22 +114,15 @@ nav_turn_view_threshold: 40           # Maximum difference of angles in degrees 
 nav_vertical_threshold: 20            # Maximum vertical angle difference in motion and viewing direction in degrees
 nav_rotation_threshold: 30            # Maximum general rotation in degrees between cameras for steps
 
-# Params for image undistortion
-undistorted_image_format: jpg         # Format in which to save the undistorted images
-undistorted_image_max_size: 100000    # Max width and height of the undistorted image
-
 # Params for depth estimation
-depthmap_method: PATCH_MATCH_SAMPLE   # Raw depthmap computation algorithm (PATCH_MATCH, BRUTE_FORCE, PATCH_MATCH_SAMPLE)
+depthmap_method: PATCH_MATCH          # Raw depthmap computation algorithm (PATCH_MATCH, BRUTE_FORCE, PATCH_MATCH_SAMPLE)
 depthmap_resolution: 640              # Resolution of the depth maps
 depthmap_num_neighbors: 10            # Number of neighboring views
-depthmap_num_matching_views: 6        # Number of neighboring views used for each depthmaps
-depthmap_min_depth: 0                 # Minimum depth in meters.  Set to 0 to auto-infer from the reconstruction.
-depthmap_max_depth: 0                 # Maximum depth in meters.  Set to 0 to auto-infer from the reconstruction.
+depthmap_num_matching_views: 2        # Number of neighboring views used for each depthmaps
 depthmap_patchmatch_iterations: 3     # Number of PatchMatch iterations to run
-depthmap_patch_size: 7                # Size of the correlation patch
 depthmap_min_patch_sd: 1.0            # Patches with lower standard deviation are ignored
-depthmap_min_correlation_score: 0.1   # Minimum correlation score to accept a depth value
-depthmap_same_depth_threshold: 0.01   # Threshold to measure depth closeness
+depthmap_min_correlation_score: 0.7   # Minimum correlation score to accept a depth value
+depthmap_same_depth_threshold: 0.005  # Threshold to measure depth closeness
 depthmap_min_consistent_views: 3      # Min number of views that should reconstruct a point for it to be valid
 depthmap_save_debug_files: no         # Save debug files with partial reconstruction results
 
@@ -140,12 +135,15 @@ submodel_overlap: 30.0                                               # Radius of
 submodels_relpath: "submodels"                                       # Relative path to the submodels directory
 submodel_relpath_template: "submodels/submodel_%04d"                 # Template to generate the relative path to a submodel directory
 submodel_images_relpath_template: "submodels/submodel_%04d/images"   # Template to generate the relative path to a submodel images directory
+
+# Params for camera cloud insertion
+max_insert_err: 0.05     # Cameras with larger median point reprojection error are not registered
 '''
 
 
 def default_config():
     """Return default configuration"""
-    return yaml.safe_load(default_config_yaml)
+    return yaml.load(default_config_yaml)
 
 
 def load_config(filepath):
@@ -154,7 +152,7 @@ def load_config(filepath):
 
     if os.path.isfile(filepath):
         with open(filepath) as fin:
-            new_config = yaml.safe_load(fin)
+            new_config = yaml.load(fin)
         if new_config:
             for k, v in new_config.items():
                 config[k] = v

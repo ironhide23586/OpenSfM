@@ -7,12 +7,11 @@ import logging
 
 import cv2
 import numpy as np
-from six import iteritems
 
 from opensfm import csfm
 from opensfm import io
 from opensfm import log
-from opensfm import tracking
+from opensfm import matching
 from opensfm.context import parallel_map
 
 
@@ -22,12 +21,12 @@ logger = logging.getLogger(__name__)
 def compute_depthmaps(data, graph, reconstruction):
     """Compute and refine depthmaps for all shots."""
     logger.info('Computing neighbors')
-    config = data.config
-    processes = config['processes']
-    num_neighbors = config['depthmap_num_neighbors']
+    processes = data.config.get('processes', 1)
+    num_neighbors = data.config['depthmap_num_neighbors']
+    tracks, _ = matching.tracks_and_images(graph)
+    common_tracks = matching.all_common_tracks(graph, tracks, include_features=False)
 
     neighbors = {}
-    common_tracks = common_tracks_double_dict(graph)
     for shot in reconstruction.shots.values():
         neighbors[shot.id] = find_neighboring_images(
             shot, common_tracks, reconstruction, num_neighbors)
@@ -36,8 +35,8 @@ def compute_depthmaps(data, graph, reconstruction):
     for shot in reconstruction.shots.values():
         if len(neighbors[shot.id]) <= 1:
             continue
-        mind, maxd = compute_depth_range(graph, reconstruction, shot, config)
-        arguments.append((data, neighbors[shot.id], mind, maxd, shot))
+        min_depth, max_depth = compute_depth_range(graph, reconstruction, shot)
+        arguments.append((data, neighbors[shot.id], min_depth, max_depth, shot))
     parallel_map(compute_depthmap_catched, arguments, processes)
 
     arguments = []
@@ -96,7 +95,6 @@ def compute_depthmap(arguments):
     de = csfm.DepthmapEstimator()
     de.set_depth_range(min_depth, max_depth, 100)
     de.set_patchmatch_iterations(data.config['depthmap_patchmatch_iterations'])
-    de.set_patch_size(data.config['depthmap_patch_size'])
     de.set_min_patch_sd(data.config['depthmap_min_patch_sd'])
     add_views_to_depth_estimator(data, neighbors, de)
 
@@ -200,14 +198,14 @@ def prune_depthmap(arguments):
     dp = csfm.DepthmapPruner()
     dp.set_same_depth_threshold(data.config['depthmap_same_depth_threshold'])
     add_views_to_depth_pruner(data, neighbors, dp)
-    points, normals, colors, labels, detections = dp.prune()
+    points, normals, colors, labels = dp.prune()
 
     # Save and display results
-    data.save_pruned_depthmap(shot.id, points, normals, colors, labels, detections)
+    data.save_pruned_depthmap(shot.id, points, normals, colors, labels)
 
     if data.config['depthmap_save_debug_files']:
         with io.open_wt(data._depthmap_file(shot.id, 'pruned.npz.ply')) as fp:
-            point_cloud_to_ply(points, normals, colors, labels, detections, fp)
+            point_cloud_to_ply(points, normals, colors, labels, fp)
 
 
 def merge_depthmaps(data, reconstruction):
@@ -215,32 +213,24 @@ def merge_depthmaps(data, reconstruction):
     logger.info("Merging depthmaps")
 
     shot_ids = [s for s in reconstruction.shots if data.pruned_depthmap_exists(s)]
-
-    if not shot_ids:
-        logger.warning("Depthmaps contain no points.  Try using more images.")
-        return
-
     points = []
     normals = []
     colors = []
     labels = []
-    detections = []
     for shot_id in shot_ids:
-        p, n, c, l, d = data.load_pruned_depthmap(shot_id)
+        p, n, c, l = data.load_pruned_depthmap(shot_id)
         points.append(p)
         normals.append(n)
         colors.append(c)
         labels.append(l)
-        detections.append(d)
-        
+
     points = np.concatenate(points)
     normals = np.concatenate(normals)
     colors = np.concatenate(colors)
     labels = np.concatenate(labels)
-    detections = np.concatenate(detections)
 
     with io.open_wt(data._depthmap_path() + '/merged.ply') as fp:
-        point_cloud_to_ply(points, normals, colors, labels, detections, fp)
+        point_cloud_to_ply(points, normals, colors, labels, fp)
 
 
 def add_views_to_depth_estimator(data, neighbors, de):
@@ -287,18 +277,6 @@ def load_combined_mask(data, shot):
         return mask
 
 
-def load_detection_labels(data, shot):
-    """Load the undistorted detection labels.
-
-    If no detection exists return an array of zeros.
-    """
-    if data.undistorted_detection_exists(shot.id):
-        return data.load_undistorted_detection(shot.id)
-    else:
-        size = int(shot.camera.height), int(shot.camera.width)
-        return np.zeros(size, dtype=np.uint8)
-
-
 def load_segmentation_labels(data, shot):
     """Load the undistorted segmentation labels.
 
@@ -319,18 +297,16 @@ def add_views_to_depth_pruner(data, neighbors, dp):
         height, width = depth.shape
         color_image = data.load_undistorted_image(shot.id)
         labels = load_segmentation_labels(data, shot)
-        detections = load_detection_labels(data, shot)
         height, width = depth.shape
         image = scale_down_image(color_image, width, height)
         labels = scale_down_image(labels, width, height, cv2.INTER_NEAREST)
-        detections = scale_down_image(detections, width, height, cv2.INTER_NEAREST)
         K = shot.camera.get_K_in_pixel_coordinates(width, height)
         R = shot.pose.get_rotation_matrix()
         t = shot.pose.translation
-        dp.add_view(K, R, t, depth, plane, image, labels, detections)
+        dp.add_view(K, R, t, depth, plane, image, labels)
 
 
-def compute_depth_range(graph, reconstruction, shot, config):
+def compute_depth_range(graph, reconstruction, shot):
     """Compute min and max depth based on reconstruction points."""
     depths = []
     for track in graph[shot.id]:
@@ -338,50 +314,30 @@ def compute_depth_range(graph, reconstruction, shot, config):
             p = reconstruction.points[track].coordinates
             z = shot.pose.transform(p)[2]
             depths.append(z)
-    min_depth = np.percentile(depths, 10) * 0.9
-    max_depth = np.percentile(depths, 90) * 1.1
-
-    config_min_depth = config['depthmap_min_depth']
-    config_max_depth = config['depthmap_max_depth']
-
-    return config_min_depth or min_depth, config_max_depth or max_depth
+    min_depth = np.percentile(depths, 10)
+    max_depth = np.percentile(depths, 90)
+    return min_depth * 0.9, max_depth * 1.1
 
 
-def common_tracks_double_dict(graph):
-    """List of track ids observed by each image pair.
-
-    Return a dict, ``res``, such that ``res[im1][im2]`` is the list of
-    common tracks between ``im1`` and ``im2``.
-    """
-    tracks, images = tracking.tracks_and_images(graph)
-    common_tracks_per_pair = tracking.all_common_tracks(
-        graph, tracks, include_features=False)
-    res = {image: {} for image in images}
-    for (im1, im2), v in iteritems(common_tracks_per_pair):
-        res[im1][im2] = v
-        res[im2][im1] = v
-    return res
-
-
-def find_neighboring_images(shot, common_tracks, reconstruction, num_neighbors):
+def find_neighboring_images(shot, common_tracks, reconstruction, num_neighbors=5):
     """Find neighboring images based on common tracks."""
     theta_min = np.pi / 60
     theta_max = np.pi / 6
     ns = []
     C1 = shot.pose.get_origin()
-    for other_id, tracks in iteritems(common_tracks.get(shot.id, {})):
-        if other_id not in reconstruction.shots:
-            continue
-        other = reconstruction.shots[other_id]
+    others = (s for s in reconstruction.shots.values() if s.id != shot.id)
+    for other in others:
         score = 0
         C2 = other.pose.get_origin()
+        tracks = common_tracks.get(tuple(sorted([shot.id, other.id])), [])
         for track in tracks:
             if track in reconstruction.points:
                 p = reconstruction.points[track].coordinates
                 theta = angle_between_points(p, C1, C2)
                 if theta > theta_min and theta < theta_max:
                     score += 1
-        if score > 20:
+
+        if (score > 20):
             ns.append((other, score))
 
     ns.sort(key=lambda ns: ns[1], reverse=True)
@@ -426,10 +382,9 @@ def depthmap_to_ply(shot, depth, image):
     points = R.T.dot(camera_coords - t.reshape(3, 1))
 
     vertices = []
-    for p, c, d in zip(points.T, image.reshape(-1, 3), depth.reshape(-1, 1)):
-        if d != 0: # ignore points with zero depth
-            s = "{} {} {} {} {} {}".format(p[0], p[1], p[2], c[0], c[1], c[2])
-            vertices.append(s)
+    for p, c in zip(points.T, image.reshape(-1, 3)):
+        s = "{} {} {} {} {} {}".format(p[0], p[1], p[2], c[0], c[1], c[2])
+        vertices.append(s)
 
     header = [
         "ply",
@@ -447,13 +402,13 @@ def depthmap_to_ply(shot, depth, image):
     return '\n'.join(header + vertices + [''])
 
 
-def point_cloud_to_ply(points, normals, colors, labels, detections, fp):
+def point_cloud_to_ply(points, normals, colors, labels, fp):
     """Export depthmap points as a PLY string"""
-    lines = _point_cloud_to_ply_lines(points, normals, colors, labels, detections)
+    lines = _point_cloud_to_ply_lines(points, normals, colors, labels)
     fp.writelines(lines)
 
 
-def _point_cloud_to_ply_lines(points, normals, colors, labels, detections):
+def _point_cloud_to_ply_lines(points, normals, colors, labels):
     yield "ply\n"
     yield "format ascii 1.0\n"
     yield "element vertex {}\n".format(len(points))
@@ -467,15 +422,14 @@ def _point_cloud_to_ply_lines(points, normals, colors, labels, detections):
     yield "property uchar diffuse_green\n"
     yield "property uchar diffuse_blue\n"
     yield "property uchar class\n"
-    yield "property uchar detection\n"
     yield "end_header\n"
 
-    template = "{:.4f} {:.4f} {:.4f} {:.3f} {:.3f} {:.3f} {} {} {} {} {}\n"
+    template = "{:.4f} {:.4f} {:.4f} {:.3f} {:.3f} {:.3f} {} {} {} {}\n"
     for i in range(len(points)):
-        p, n, c, l, d = points[i], normals[i], colors[i], labels[i], detections[i]
+        p, n, c, l = points[i], normals[i], colors[i], labels[i]
         yield template.format(
             p[0], p[1], p[2], n[0], n[1], n[2],
-            int(c[0]), int(c[1]), int(c[2]), int(l), int(d))
+            int(c[0]), int(c[1]), int(c[2]), int(l))
 
 
 def color_plane_normals(plane):

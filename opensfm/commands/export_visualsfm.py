@@ -37,10 +37,9 @@ class Command:
         for shot in reconstruction.shots.values():
             q = tf.quaternion_from_matrix(shot.pose.get_rotation_matrix())
             o = shot.pose.get_origin()
-            size = max(self.image_size(shot.id, data))
             words = [
                 self.image_path(shot.id, data),
-                shot.camera.focal * size,
+                shot.camera.focal * max(shot.camera.width, shot.camera.height),
                 q[0], q[1], q[2], q[3],
                 o[0], o[1], o[2],
                 '0', '0',
@@ -55,8 +54,3 @@ class Command:
         """Path to the undistorted image relative to the dataset path."""
         path = data._undistorted_image_file(image)
         return os.path.relpath(path, data.data_path)
-
-    def image_size(self, image, data):
-        """Height and width of the undistorted image."""
-        image = data.load_undistorted_image(image)
-        return image.shape[:2]

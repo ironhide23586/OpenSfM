@@ -191,6 +191,7 @@ def extract_features_akaze(image, config):
     options.descriptor = akaze_descriptor_type(akaze_descriptor_name)
     options.descriptor_size = config['akaze_descriptor_size']
     options.descriptor_channels = config['akaze_descriptor_channels']
+    options.process_size = config['feature_process_size']
     options.dthreshold = config['akaze_dthreshold']
     options.kcontrast_percentile = config['akaze_kcontrast_percentile']
     options.use_isotropic_diffusion = config['akaze_use_isotropic_diffusion']
@@ -232,7 +233,15 @@ def extract_features_hahog(image, config):
     return points, desc
 
 
-def extract_features_orb(image, config):
+def extract_features_orb(image, config, points=None):
+    """
+    Compute ORB features on input image
+
+    :param image: MxNx3 RGB pixel array
+    :param config: config settings
+    :param points: list of cv2.KeyPoint objects indicating where to compute features. If None, features are detected
+    :return:
+    """
     if context.OPENCV3:
         detector = cv2.ORB_create(nfeatures=int(config['feature_min_frames']))
         descriptor = detector
@@ -243,17 +252,29 @@ def extract_features_orb(image, config):
 
     logger.debug('Computing ORB')
     t = time.time()
-    points = detector.detect(image)
-
-    points, desc = descriptor.compute(image, points)
+    if points is None:  # detect points if they are not input
+        points = detector.detect(image)
+        points, desc = descriptor.compute(image, points)
+    else:
+        npts = len(points)  # number of points
+        points_new, desc_new = descriptor.compute(image, points)  # Compute descriptors at input points
+        if len(points_new) == npts:
+            desc = desc_new
+        else:  # Some points were dropped
+            xy = [pt.pt for pt in points_new]  # set of new points
+            mask = np.array([pt.pt in xy for pt in points])  # mask of input points that were not dropped
+            # Leave dropped points with all-zeros descriptor
+            desc = np.zeros((npts, desc_new.shape[1]), dtype='uint8')
+            desc[mask] = desc_new
     points = np.array([(i.pt[0], i.pt[1], i.size, i.angle) for i in points])
 
     logger.debug('Found {0} points in {1}s'.format(len(points), time.time() - t))
     return points, desc
 
 
-def extract_features(color_image, config, mask=None):
-    """Detect features in an image.
+def extract_features(color_image, config, mask=None, points=None):
+    """
+    Detect features in an image.
 
     The type of feature detected is determined by the ``feature_type``
     config option.
@@ -261,8 +282,11 @@ def extract_features(color_image, config, mask=None):
     The coordinates of the detected points are returned in normalized
     image coordinates.
 
-    Returns:
-        tuple:
+    :param color_image: MxNx3 RGB pixel array
+    :param config: configuration parameters for data set
+    :param mask: mask for allowable point positions
+    :param points: list of points where to compute features (list of cv2.KeyPoints)
+    :return: tuple:
         - points: ``x``, ``y``, ``size`` and ``angle`` for each feature
         - descriptors: the descriptor of each feature
         - colors: the color of the center of each feature
@@ -270,8 +294,17 @@ def extract_features(color_image, config, mask=None):
     assert len(color_image.shape) == 3
     color_image = resized_image(color_image, config)
     image = cv2.cvtColor(color_image, cv2.COLOR_RGB2GRAY)
-
     feature_type = config['feature_type'].upper()
+
+    # Extract list of key points
+    img_ht, img_wd = image.shape
+    key_pts = None  # initialize key points
+    if points is not None:
+        if feature_type != 'ORB':
+            raise IOError("points input currently only supported for ORB features - LH 8/24/18")
+        points[:, :2] = denormalized_image_coordinates(norm_coords=points[:, :2], width=img_wd, height=img_ht)
+        key_pts = [cv2.KeyPoint(x=f[0], y=f[1], _size=f[2], _angle=f[3]) for f in points]
+
     if feature_type == 'SIFT':
         points, desc = extract_features_sift(image, config)
     elif feature_type == 'SURF':
@@ -281,7 +314,7 @@ def extract_features(color_image, config, mask=None):
     elif feature_type == 'HAHOG':
         points, desc = extract_features_hahog(image, config)
     elif feature_type == 'ORB':
-        points, desc = extract_features_orb(image, config)
+        points, desc = extract_features_orb(image, config, key_pts)
     else:
         raise ValueError('Unknown feature type '
                          '(must be SURF, SIFT, AKAZE, HAHOG or ORB)')

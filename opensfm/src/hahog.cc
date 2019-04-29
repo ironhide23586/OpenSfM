@@ -13,14 +13,14 @@ extern "C" {
 
 namespace csfm {
 
-py::object hahog(pyarray_f image,
+bp::object hahog(PyObject *image,
                  float peak_threshold,
                  float edge_threshold,
                  int target_num_features,
                  bool use_adaptive_suppression) {
-  py::gil_scoped_release release;
+  PyArrayContiguousView<float> im((PyArrayObject *)image);
 
-  if (image.size()) {
+  if (im.valid()) {
     //clock_t t_start = clock();
     // create a detector object
     VlCovDet * covdet = vl_covdet_new(VL_COVDET_METHOD_HESSIAN);
@@ -33,7 +33,7 @@ py::object hahog(pyarray_f image,
     vl_covdet_set_use_adaptive_suppression(covdet, use_adaptive_suppression);
 
     // process the image and run the detector
-    vl_covdet_put_image(covdet, image.data(), image.shape(1), image.shape(0));
+    vl_covdet_put_image(covdet, im.data(), im.shape(1), im.shape(0));
 
     //clock_t t_scalespace = clock();
 
@@ -107,12 +107,12 @@ py::object hahog(pyarray_f image,
     // std::cout << "t_orient " << float(t_orient - t_affine)/CLOCKS_PER_SEC << "\n";
     // std::cout << "description " << float(t_description - t_orient)/CLOCKS_PER_SEC << "\n";
 
-    py::list retn;
-    retn.append(py_array_from_data(&points[0], numFeatures, 4));
-    retn.append(py_array_from_data(&desc[0], numFeatures, dimension));
+    bp::list retn;
+    retn.append(bpn_array_from_data(&points[0], numFeatures, 4));
+    retn.append(bpn_array_from_data(&desc[0], numFeatures, dimension));
     return retn;
   }
-  return py::none();
+  return bp::object();
 }
 
 }

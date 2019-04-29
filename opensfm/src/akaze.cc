@@ -1,15 +1,14 @@
 #include "types.h"
 #include "AKAZE.h"
-#include "akaze_bind.h"
 #include <opencv2/imgproc/imgproc.hpp>
 
 namespace csfm {
 
 
-py::object akaze(pyarray_uint8 image, AKAZEOptions options) {
-  py::gil_scoped_release release;
-
-  const cv::Mat img(image.shape(0), image.shape(1), CV_8U, (void *)image.data());
+bp::object akaze(PyObject *image,
+                 AKAZEOptions options) {
+  PyArrayContiguousView<unsigned char> view((PyArrayObject *)image);
+  const cv::Mat img(view.shape(0), view.shape(1), CV_8U, (void *)view.data());
 
   cv::Mat img_32;
   img.convertTo(img_32, CV_32F, 1.0 / 255.0, 0);
@@ -40,13 +39,13 @@ py::object akaze(pyarray_uint8 image, AKAZEOptions options) {
     keys.at<float>(i, 3) = kpts[i].angle;
   }
 
-  py::list retn;
-  retn.append(py_array_from_data(keys.ptr<float>(0), keys.rows, keys.cols));
+  bp::list retn;
+  retn.append(bpn_array_from_data(keys.ptr<float>(0), keys.rows, keys.cols));
 
   if (options.descriptor == MLDB_UPRIGHT || options.descriptor == MLDB) {
-    retn.append(py_array_from_data(desc.ptr<unsigned char>(0), desc.rows, desc.cols));
+    retn.append(bpn_array_from_data(desc.ptr<unsigned char>(0), desc.rows, desc.cols));
   } else {
-    retn.append(py_array_from_data(desc.ptr<float>(0), desc.rows, desc.cols));
+    retn.append(bpn_array_from_data(desc.ptr<float>(0), desc.rows, desc.cols));
   }
   return retn;
 }

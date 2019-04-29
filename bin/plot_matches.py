@@ -6,6 +6,7 @@ from itertools import combinations
 
 import matplotlib.pyplot as pl
 import networkx as nx
+from networkx.drawing.nx_agraph import graphviz_layout
 import numpy as np
 
 from opensfm import dataset
@@ -61,9 +62,9 @@ if __name__ == "__main__":
 
         weights = [i[2]['weight'] for i in graph.edges(data=True)]
 
-        nx.draw_graphviz(
-            graph, edge_color=weights, edge_cmap=pl.get_cmap('Blues'),
-            edge_vmin=0, edge_vmax=200)
+        pos = graphviz_layout(graph, 'neato')
+        nx.draw(graph, pos, edge_color=weights, edge_cmap=pl.get_cmap('Blues'), edge_vmin=0, edge_vmax=200)
+
         pl.axis('off')
         pl.show()
     else:
